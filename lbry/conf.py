@@ -616,6 +616,9 @@ class Config(CLIConfig):
     tcp_port = Integer("TCP port to listen for incoming blob requests", 4444, previous_names=['peer_port'])
     prometheus_port = Integer("Port to expose prometheus metrics (off by default)", 0)
     network_interface = String("Interface to use for the DHT and blob exchange", '0.0.0.0')
+    allow_localhost_peers = Toggle(
+        "Allow connections to and from localhost peers (127.0.0.1). Useful for development and testing.", False
+    )
 
     # routing table
     split_buckets_under_index = Integer(
