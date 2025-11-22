@@ -205,7 +205,7 @@ class WalletServerPaymentsComponent(Component):
 
 class BlobComponent(Component):
     component_name = BLOB_COMPONENT
-    depends_on = [DATABASE_COMPONENT]
+    depends_on = [DATABASE_COMPONENT, DHT_COMPONENT]
 
     def __init__(self, component_manager):
         super().__init__(component_manager)
