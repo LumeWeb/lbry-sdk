@@ -54,6 +54,9 @@ from lbry.extras.daemon.security import ensure_request_allowed
 from lbry.file_analysis import VideoFileAnalyzer
 from lbry.schema.claim import Claim
 from lbry.schema.url import URL
+from lbry.stream.descriptor import StreamDescriptor
+from lbry.stream.reflector.client import StreamReflectorClient
+from lbry.blob.blob_info import BlobInfo
 
 
 if typing.TYPE_CHECKING:
@@ -5106,8 +5109,81 @@ class Daemon(metaclass=JSONRPCServerType):
         Returns:
             (list) reflected blob hashes
         """
-
-        raise NotImplementedError()
+        if not isinstance(blob_hashes, list):
+            blob_hashes = [blob_hashes]
+        
+        # Validate blob hashes
+        valid_blob_hashes = []
+        for blob_hash in blob_hashes:
+            if not is_valid_blobhash(blob_hash):
+                log.warning("Invalid blob hash: %s", blob_hash)
+                continue
+            if not self.blob_manager.get_blob(blob_hash):
+                log.warning("Blob not found in blob manager: %s", blob_hash)
+                continue
+            valid_blob_hashes.append(blob_hash)
+        
+        if not valid_blob_hashes:
+            log.warning("No valid blobs to reflect")
+            return []
+        
+        # Parse reflector server
+        server, port = self._parse_reflector_server(reflector_server)
+        
+        # Reflect blobs using proper transport setup like ManagedStream.upload_to_reflector
+        reflected = []
+        
+        # Create a minimal descriptor for blob reflection
+        minimal_descriptor = StreamDescriptor(
+            loop=asyncio.get_event_loop(),
+            blob_dir=os.path.join(self.conf.data_dir, "blobfiles"),
+            stream_name="blob_reflect",
+            key="",
+            suggested_file_name="",
+            blobs=[]
+        )
+        
+        protocol = StreamReflectorClient(self.blob_manager, minimal_descriptor)
+        
+        try:
+            # Set up transport connection like in ManagedStream.upload_to_reflector
+            await asyncio.get_event_loop().create_connection(lambda: protocol, server, port)
+            await protocol.send_handshake()
+            
+            # For individual blob reflection, we don't need to send descriptor
+            # since we're not reflecting a full stream
+            
+            for blob_hash in valid_blob_hashes:
+                try:
+                    blob = self.blob_manager.get_blob(blob_hash)
+                    if not blob or not blob.get_is_verified():
+                        log.warning("Blob %s is not finished, skipping", blob_hash)
+                        continue
+                    
+                    # Send the blob using the connected protocol
+                    await protocol.send_blob(blob_hash)
+                    reflected.append(blob_hash)
+                    log.info("Successfully reflected blob %s to %s:%d", blob_hash, server, port)
+                    
+                except (asyncio.TimeoutError, ValueError) as e:
+                    log.warning("Error reflecting blob %s: %s", blob_hash, str(e))
+                    continue
+                except Exception as e:
+                    log.exception("Unexpected error reflecting blob %s: %s", blob_hash, str(e))
+                    continue
+                    
+        except (ConnectionError, OSError, asyncio.TimeoutError, ValueError) as e:
+            log.error("Failed to connect to reflector %s:%d: %s", server, port, str(e))
+            return []
+        except Exception as e:
+            log.exception("Unexpected error connecting to reflector %s:%d: %s", server, port, str(e))
+            return []
+        finally:
+            # Clean up transport like in ManagedStream.upload_to_reflector
+            if protocol.transport:
+                protocol.transport.close()
+        
+        return reflected
 
     @requires(BLOB_COMPONENT)
     async def jsonrpc_blob_reflect_all(self):
@@ -5121,10 +5197,25 @@ class Daemon(metaclass=JSONRPCServerType):
             None
 
         Returns:
-            (bool) true if successful
+            (list) List of successfully reflected blob hashes
         """
-
-        raise NotImplementedError()
+        # Get all completed blob hashes
+        blob_hashes = list(self.blob_manager.completed_blob_hashes)
+        
+        if not blob_hashes:
+            log.info("No blobs available to reflect")
+            return []
+        
+        log.info("Starting reflection of %d blobs", len(blob_hashes))
+        
+        # Use random reflector server from config
+        server, port = random.choice(self.conf.reflector_servers)
+        
+        # Reflect all blobs using the existing blob_reflect method
+        reflected = await self.jsonrpc_blob_reflect(blob_hashes, f"{server}:{port}")
+        
+        log.info("Successfully reflected %d out of %d blobs", len(reflected), len(blob_hashes))
+        return reflected
 
     @requires(DISK_SPACE_COMPONENT)
     async def jsonrpc_blob_clean(self):
