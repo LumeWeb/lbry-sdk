@@ -1,4 +1,4 @@
-FROM debian:10-slim
+FROM python:3.9
 
 ARG user=lbry
 ARG downloads_dir=/database
@@ -10,30 +10,32 @@ ENV DOCKER_TAG=$DOCKER_TAG DOCKER_COMMIT=$DOCKER_COMMIT
 
 RUN apt-get update && \
     apt-get -y --no-install-recommends install \
+      pipx \
       wget \
       automake libtool \
       tar unzip \
       build-essential \
-      pkg-config \
-      libleveldb-dev \
-      python3.7 \
-      python3-dev \
-      python3-pip \
-      python3-wheel \
-      python3-setuptools && \
-    update-alternatives --install /usr/bin/pip pip /usr/bin/pip3 1 && \
+      pkg-config && \
     rm -rf /var/lib/apt/lists/*
 
 RUN groupadd -g 999 $user && useradd -m -u 999 -g $user $user
 RUN mkdir -p $downloads_dir
 RUN chown -R $user:$user $downloads_dir
 
-COPY . $projects_dir
+COPY scripts/ $projects_dir/scripts/
+COPY setup* $projects_dir
+COPY Makefile* $projects_dir
+COPY lbry/ $projects_dir/lbry/
+COPY tests/ $projects_dir/tests/
+COPY icons/ $projects_dir/icons/
+COPY docker/set_build.py $projects_dir/docker/set_build.py
+COPY *.md $projects_dir/
 RUN chown -R $user:$user $projects_dir
 
 USER $user
 WORKDIR $projects_dir
 
+RUN pipx install uv
 RUN pip install uvloop
 RUN make install
 RUN python3 docker/set_build.py
