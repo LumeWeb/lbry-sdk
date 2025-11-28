@@ -28,8 +28,7 @@ class BlobManager:
         self.blob_dir = blob_dir
         self.storage = storage
         self._node_data_store = node_data_store
-        self.completed_blob_hashes: typing.Set[str] = set() if not self._node_data_store\
-            else self._node_data_store.completed_blobs
+        self.completed_blob_hashes: typing.Set[str] = set() if self._node_data_store is None else self._node_data_store.completed_blobs
         self.blobs: typing.Dict[str, AbstractBlob] = {}
         self.config = config
         self.decrypted_blob_lru_cache = None if not self.config.blob_lru_cache_size else LRUCacheWithMetrics(
