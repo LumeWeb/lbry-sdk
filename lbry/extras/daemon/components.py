@@ -273,6 +273,12 @@ class DHTComponent(Component):
 
     async def start(self):
         log.info("start the dht")
+        
+        # Apply localhost configuration
+        if self.conf.allow_localhost_peers:
+            from lbry.dht import peer as dht_peer
+            dht_peer.ALLOW_LOCALHOST = True
+        
         upnp_component = self.component_manager.get_component(UPNP_COMPONENT)
         self.external_peer_port = upnp_component.upnp_redirects.get("TCP", self.conf.tcp_port)
         self.external_udp_port = upnp_component.upnp_redirects.get("UDP", self.conf.udp_port)
