@@ -5095,6 +5095,45 @@ class Daemon(metaclass=JSONRPCServerType):
             blobs = [blob_hash for blob_hash in blobs if self.blob_manager.is_blob_verified(blob_hash)]
         return paginate_list(blobs, page, page_size)
 
+    def _parse_reflector_server(self, reflector_server: typing.Optional[str]) -> typing.Tuple[str, int]:
+        """
+        Parse reflector server string and return (server, port) tuple.
+        
+        Args:
+            reflector_server: String in format "host:port" or None to use default
+            
+        Returns:
+            Tuple of (server, port)
+            
+        Raises:
+            ValueError: If the format is invalid
+        """
+        if reflector_server is None:
+            # Use default reflector server from config
+            server, port = random.choice(self.conf.reflector_servers)
+            return server, port
+        
+        if ':' not in reflector_server:
+            raise ValueError(f"Invalid reflector server format: {reflector_server}. Expected format: host:port")
+        
+        parts = reflector_server.rsplit(':', 1)
+        if len(parts) != 2:
+            raise ValueError(f"Invalid reflector server format: {reflector_server}. Expected format: host:port")
+        
+        server, port_str = parts
+        try:
+            port = int(port_str)
+        except ValueError:
+            raise ValueError(f"Invalid port number in reflector server: {reflector_server}")
+        
+        if not server:
+            raise ValueError(f"Empty server in reflector server: {reflector_server}")
+        
+        if port <= 0 or port > 65535:
+            raise ValueError(f"Port out of range in reflector server: {reflector_server}")
+        
+        return server, port
+
     @requires(BLOB_COMPONENT)
     async def jsonrpc_blob_reflect(self, blob_hashes, reflector_server=None):
         """
