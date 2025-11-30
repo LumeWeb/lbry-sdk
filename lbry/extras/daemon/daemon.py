@@ -57,6 +57,7 @@ from lbry.schema.url import URL
 from lbry.stream.descriptor import StreamDescriptor
 from lbry.stream.reflector.client import StreamReflectorClient
 from lbry.blob.blob_info import BlobInfo
+from lbry.error import InvalidStreamDescriptorError
 
 
 if typing.TYPE_CHECKING:
@@ -5172,55 +5173,75 @@ class Daemon(metaclass=JSONRPCServerType):
         # Reflect blobs using proper transport setup like ManagedStream.upload_to_reflector
         reflected = []
         
-        # Create a minimal descriptor for blob reflection
-        minimal_descriptor = StreamDescriptor(
-            loop=asyncio.get_event_loop(),
-            blob_dir=os.path.join(self.conf.data_dir, "blobfiles"),
-            stream_name="blob_reflect",
-            key="",
-            suggested_file_name="",
-            blobs=[]
-        )
-        
-        protocol = StreamReflectorClient(self.blob_manager, minimal_descriptor)
-        
-        try:
-            # Set up transport connection like in ManagedStream.upload_to_reflector
-            await asyncio.get_event_loop().create_connection(lambda: protocol, server, port)
-            await protocol.send_handshake()
-            
-            # For individual blob reflection, we don't need to send descriptor
-            # since we're not reflecting a full stream
-            
-            for blob_hash in valid_blob_hashes:
+        # Process each blob individually to handle SD blobs vs normal blobs properly
+        for blob_hash in valid_blob_hashes:
+            try:
+                blob = self.blob_manager.get_blob(blob_hash)
+                if not blob or not blob.get_is_verified():
+                    log.warning("Blob %s is not finished, skipping", blob_hash)
+                    continue
+                
+                # Auto-detect if this is an SD blob by trying to create a StreamDescriptor
+                is_sd_blob = False
+                descriptor = None
+                
                 try:
-                    blob = self.blob_manager.get_blob(blob_hash)
-                    if not blob or not blob.get_is_verified():
-                        log.warning("Blob %s is not finished, skipping", blob_hash)
-                        continue
+                    descriptor = await self.blob_manager.get_stream_descriptor(blob_hash)
+                    is_sd_blob = True
+                    log.debug("Detected SD blob: %s", blob_hash[:8])
+                except (InvalidStreamDescriptorError, Exception) as e:
+                    log.debug("Blob %s is not an SD blob: %s", blob_hash[:8], str(e))
+                    is_sd_blob = False
+                
+                # Create appropriate descriptor for the reflector client
+                if is_sd_blob and descriptor:
+                    # Use the actual SD blob descriptor
+                    protocol = StreamReflectorClient(self.blob_manager, descriptor)
+                else:
+                    # Create a minimal descriptor for normal blob reflection
+                    minimal_descriptor = StreamDescriptor(
+                        loop=asyncio.get_event_loop(),
+                        blob_dir=os.path.join(self.conf.data_dir, "blobfiles"),
+                        stream_name="blob_reflect",
+                        key="",
+                        suggested_file_name="",
+                        blobs=[]
+                    )
+                    protocol = StreamReflectorClient(self.blob_manager, minimal_descriptor)
+                
+                try:
+                    # Set up transport connection like in ManagedStream.upload_to_reflector
+                    await asyncio.get_event_loop().create_connection(lambda: protocol, server, port)
+                    await protocol.send_handshake()
                     
-                    # Send the blob using the connected protocol
-                    await protocol.send_blob(blob_hash)
-                    reflected.append(blob_hash)
-                    log.info("Successfully reflected blob %s to %s:%d", blob_hash, server, port)
-                    
-                except (asyncio.TimeoutError, ValueError) as e:
-                    log.warning("Error reflecting blob %s: %s", blob_hash, str(e))
+                    if is_sd_blob and descriptor:
+                        # Send SD blob using descriptor method
+                        sent_sd, needed = await protocol.send_descriptor()
+                        if sent_sd:
+                            reflected.append(blob_hash)
+                            log.info("Successfully reflected SD blob %s to %s:%d", blob_hash[:8], server, port)
+                        else:
+                            log.warning("Failed to reflect SD blob %s to %s:%d", blob_hash[:8], server, port)
+                    else:
+                        # Send normal blob
+                        await protocol.send_blob(blob_hash)
+                        reflected.append(blob_hash)
+                        log.info("Successfully reflected blob %s to %s:%d", blob_hash[:8], server, port)
+                        
+                except (ConnectionError, OSError, asyncio.TimeoutError, ValueError) as e:
+                    log.error("Failed to connect to reflector %s:%d for blob %s: %s", server, port, blob_hash[:8], str(e))
                     continue
                 except Exception as e:
-                    log.exception("Unexpected error reflecting blob %s: %s", blob_hash, str(e))
+                    log.exception("Unexpected error reflecting blob %s: %s", blob_hash[:8], str(e))
                     continue
-                    
-        except (ConnectionError, OSError, asyncio.TimeoutError, ValueError) as e:
-            log.error("Failed to connect to reflector %s:%d: %s", server, port, str(e))
-            return []
-        except Exception as e:
-            log.exception("Unexpected error connecting to reflector %s:%d: %s", server, port, str(e))
-            return []
-        finally:
-            # Clean up transport like in ManagedStream.upload_to_reflector
-            if protocol.transport:
-                protocol.transport.close()
+                finally:
+                    # Clean up transport like in ManagedStream.upload_to_reflector
+                    if protocol.transport:
+                        protocol.transport.close()
+                        
+            except Exception as e:
+                log.exception("Unexpected error processing blob %s: %s", blob_hash[:8], str(e))
+                continue
         
         return reflected
 
@@ -5245,15 +5266,16 @@ class Daemon(metaclass=JSONRPCServerType):
             log.info("No blobs available to reflect")
             return []
         
-        log.info("Starting reflection of %d blobs", len(blob_hashes))
+        log.info("Starting reflection of %d blobs (with automatic SD blob detection)", len(blob_hashes))
         
         # Use random reflector server from config
         server, port = random.choice(self.conf.reflector_servers)
         
         # Reflect all blobs using the existing blob_reflect method
+        # This now automatically detects SD blobs and routes them properly
         reflected = await self.jsonrpc_blob_reflect(blob_hashes, f"{server}:{port}")
         
-        log.info("Successfully reflected %d out of %d blobs", len(reflected), len(blob_hashes))
+        log.info("Successfully reflected %d out of %d blobs (SD blobs automatically detected and routed)", len(reflected), len(blob_hashes))
         return reflected
 
     @requires(DISK_SPACE_COMPONENT)
