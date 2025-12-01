@@ -18,7 +18,7 @@ if typing.TYPE_CHECKING:
     from lbry.conf import Config
     from lbry.extras.daemon.analytics import AnalyticsManager
     from lbry.extras.daemon.storage import SQLiteStorage
-    from lbry.wallet import WalletManager
+    from lbry.wallet import WalletManager, Wallet
     from lbry.extras.daemon.exchange_rate_manager import ExchangeRateManager
 
 log = logging.getLogger(__name__)
@@ -305,3 +305,56 @@ class FileManager:
     async def delete(self, source: ManagedDownloadSource, delete_file=False):
         for manager in self.source_managers.values():
             await manager.delete(source, delete_file)
+
+    async def create_stream_from_sd_hash(self, sd_hash: str, file_name: Optional[str] = None, 
+                                       download_directory: Optional[str] = None) -> Optional[ManagedDownloadSource]:
+        """
+        Create a ManagedStream directly from an SD hash without claim resolution.
+        This bypasses all claim/onchain requirements.
+        """
+        if 'stream' not in self.source_managers:
+            raise NotImplementedError("Stream source manager not available")
+        
+        from lbry.stream.managed_stream import ManagedStream
+        from lbry.extras.daemon.storage import StoredContentClaim
+        
+        source_manager = self.source_managers['stream']
+        
+        # Check if stream already exists
+        existing = source_manager.get_filtered(sd_hash=sd_hash)
+        if existing:
+            log.info("Stream with SD hash %s already exists", sd_hash[:8])
+            return existing[0]
+        
+        # Create a minimal fake claim for the stream
+        fake_claim = StoredContentClaim(
+            outpoint="sd_hack:0",
+            claim_id="sd_" + sd_hash[:20],
+            name=file_name or f"sd_{sd_hash[:8]}",
+            amount=0,
+            height=0,
+            serialized=""
+        )
+        
+        # Create ManagedStream without going through normal claim resolution
+        stream = ManagedStream(
+            self.loop,
+            self.config,
+            source_manager.blob_manager,
+            sd_hash,
+            download_directory or self.config.download_dir,
+            file_name,
+            ManagedStream.STATUS_STOPPED,
+            claim=fake_claim,
+            analytics_manager=self.analytics_manager
+        )
+        
+        # Set up DHT node for downloads if available
+        if hasattr(source_manager, 'node') and source_manager.node:
+            stream.downloader.node = source_manager.node
+        
+        # Add stream to source manager
+        source_manager.add(stream)
+        
+        log.info("Created ManagedStream from SD hash %s without claim", sd_hash[:8])
+        return stream
