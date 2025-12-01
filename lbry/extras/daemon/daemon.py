@@ -2296,6 +2296,21 @@ class Daemon(metaclass=JSONRPCServerType):
 
         streams = self.file_manager.get_filtered(**kwargs)
 
+        # HACK: Try to create stream from SD hash if no existing streams found
+        if not streams and 'sd_hash' in kwargs:
+            sd_hash = kwargs['sd_hash']
+            if sd_hash and re.match(r'^[0-9a-fA-F]{96}$', sd_hash.strip()):
+                try:
+                    log.info("No existing stream found, attempting to create from SD hash: %s", sd_hash[:8])
+                    stream = await self.file_manager.create_stream_from_sd_hash(
+                        sd_hash, file_name, download_directory
+                    )
+                    if stream:
+                        streams = [stream]
+                        log.info("Successfully created stream from SD hash: %s", sd_hash[:8])
+                except Exception as e:
+                    log.warning("Failed to create stream from SD hash %s: %s", sd_hash[:8], str(e))
+
         if len(streams) > 1:
             log.warning("There are %i matching files, use narrower filters to select one", len(streams))
             return False
