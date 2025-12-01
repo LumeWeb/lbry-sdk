@@ -145,11 +145,11 @@ class ManagedDownloadSource:
 
     @property
     def metadata(self) -> Optional[typing.Dict]:
-        return None if not self.stream_claim_info else self.stream_claim_info.claim.stream.to_dict()
+        return None if not self.stream_claim_info or not self.stream_claim_info.claim or not self.stream_claim_info.claim.stream else self.stream_claim_info.claim.stream.to_dict()
 
     @property
     def metadata_protobuf(self) -> bytes:
-        if self.stream_claim_info:
+        if self.stream_claim_info and self.stream_claim_info.claim:
             return binascii.hexlify(self.stream_claim_info.claim.to_bytes())
 
     @property
